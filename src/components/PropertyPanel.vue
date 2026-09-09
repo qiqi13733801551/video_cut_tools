@@ -49,7 +49,7 @@
 
       <div v-if="activeTab === 'basic'&&selectedClip.type === 'video'" class="tab-content">
         <div class="prop-group">
-          <div class="prop-row">
+          <div class="prop-row" v-if="selectedClip.sourceType === 'video'">
             <label>播放倍速 {{localClip.playbackRate ?? 1.0}}x(此值在预览中不会生效,导出视频时会生效)</label>
             <input type="range" min="0.25" max="3" step="0.25" v-model.number="localClip.playbackRate" @input="emitUpdate('playbackRate')" />
           </div>
@@ -254,12 +254,20 @@ const tabList = computed(() => {
   const clip = props.selectedClip
   if (!clip) return []
   if (clip.type === 'video') {
-    return [
-      { key:'info', label:'素材信息'},
-      { key:'basic', label:'基础'},
-      { key:'audio', label:'音频'},
-      { key:'color', label:'调色'}
-    ]
+    if(clip.sourceType == 'image'){
+      return [
+        { key:'info', label:'素材信息'},
+        { key:'basic', label:'基础'},
+        { key:'color', label:'调色'}
+      ]
+    }else{
+      return [
+        { key:'info', label:'素材信息'},
+        { key:'basic', label:'基础'},
+        { key:'audio', label:'音频'},
+        { key:'color', label:'调色'}
+      ]
+    }
   } else if (clip.type === 'audio') {
     return [
       { key:'info', label:'素材信息'},

@@ -1,20 +1,57 @@
 <template>
   <div class="preview-wrapper" ref="wrapperRef">
-    <!-- 最终WebGL输出画布，显示给用户 -->
-    <canvas
-      ref="glCanvasRef"
-      class="preview-canvas"
-      @mousedown="handleCanvasMouseDown"
-      @mousemove="handleCanvasMouseMove"
-      @mouseup="handleCanvasMouseUp"
-      @mouseleave="handleCanvasMouseUp"
-    ></canvas>
+    <div class="canvas-wrapper">
+      <!-- 最终WebGL输出画布，显示给用户 -->
+      <canvas
+        ref="glCanvasRef"
+        class="preview-canvas"
+        @mousedown="handleCanvasMouseDown"
+        @mousemove="handleCanvasMouseMove"
+        @mouseup="handleCanvasMouseUp"
+        @mouseleave="handleCanvasMouseUp"
+      ></canvas>
+    </div>
 
     <div class="control-bar">
       <button @click="play">播放</button>
       <button @click="pause">暂停</button>
       <button @click="toggleMute">{{ isMute ? "取消静音" : "静音" }}</button>
+      <div class="ratio-wrap">
+        <div class="ratio-btn" @click="showRatioDropdown = !showRatioDropdown">
+          {{ currentRatio.label }}
+        </div>
+        <div v-if="showRatioDropdown" class="ratio-dropdown">
+          <div
+            v-for="item in ratioPresets"
+            :key="item.value"
+            class="ratio-option"
+            :class="{ active: currentRatio.value === item.value }"
+            @click="handleSelectRatio(item)"
+          >
+            {{ item.label }}
+          </div>
+        </div>
+      </div>
     </div>
+    <!-- 切换比例确认弹窗 -->
+    <div v-if="showConfirmDialog" class="confirm-mask" @click.self="closeConfirmDialog">
+      <div class="confirm-dialog">
+        <div class="confirm-header">
+          <span class="warn-icon">!</span>
+          <span class="confirm-title">切换比例将重置素材属性</span>
+        </div>
+        <div class="confirm-body">
+          <p>是否确认切换比例？</p>
+          <p>切换比例后，所有素材的属性（位置、裁剪、缩放等）将重置为初始状态，且撤回时相应属性无法恢复，请谨慎操作。</p>
+        </div>
+        <div class="confirm-footer">
+          <button class="btn-cancel" @click="closeConfirmDialog">取消切换</button>
+          <button class="btn-confirm" @click="confirmSwitchRatio">确认切换</button>
+        </div>
+      </div>
+    </div>
+
+
   </div>
 </template>
 
@@ -28,6 +65,122 @@ const props = defineProps({
   canvasWidth: { type: Number, default: 720 },
   canvasHeight: { type: Number, default: 405 }
 });
+
+// 预览基准画布：所有存储的素材坐标都基于此尺寸
+const BASE_CANVAS_W = 783;
+const BASE_CANVAS_H = 450;
+
+// 原始/自适应画布尺寸，取自第一个视频/图片
+const autoCanvasSize = ref({ w: 1880, h: 1080 })
+
+const ratioPresets = computed(() => [
+  {
+    label: `自适应 ${autoCanvasSize.value.w}:${autoCanvasSize.value.h}`,
+    value: 'auto',
+    w: autoCanvasSize.value.w,
+    h: autoCanvasSize.value.h
+  },
+  { label: '1:1', value: '1:1', w: 1, h: 1 },
+  { label: '2:1', value: '2:1', w: 2, h: 1 },
+  { label: '4:3', value: '4:3', w: 4, h: 3 },
+  { label: '3:4', value: '3:4', w: 3, h: 4 },
+  { label: '9:16', value: '9:16', w: 9, h: 16 },
+  { label: '16:9', value: '16:9', w: 16, h: 9 },
+  { label: '21:9', value: '21:9', w: 21, h: 9 },
+  { label: '16:10', value: '16:10', w: 16, h: 10 }
+])
+
+const showRatioDropdown = ref(false)
+const showConfirmDialog = ref(false)
+const targetRatio = ref(null)
+const currentRatio = ref({ label: '自适应', value: 'auto', w: 1880, h: 1080 })
+// 内部渲染尺寸，替换原有 props.canvasWidth/canvasHeight 引用
+const renderWidth = ref(props.canvasWidth)
+const renderHeight = ref(props.canvasHeight)
+
+function handleSelectRatio(item) {
+  targetRatio.value = item
+  showRatioDropdown.value = false
+
+  if (item.value === 'auto') {
+    // 选择【自适应(原始尺寸)】，直接使用autoCanvasSize真实像素
+    currentRatio.value = item
+    applyRatio(autoCanvasSize.value.w, autoCanvasSize.value.h)
+  } else {
+    // 其它固定比例，走确认弹窗逻辑不变
+    showConfirmDialog.value = true
+  }
+}
+
+function closeConfirmDialog() {
+  showConfirmDialog.value = false
+  targetRatio.value = null
+}
+
+function applyRatio(w, h) {
+  // renderWidth/renderHeight：绘图缓冲区像素尺寸，用于绘制逻辑、坐标换算，保留不变
+  const baseH = props.canvasHeight;
+  const newW = baseH * (w / h);
+  renderWidth.value = newW;
+  renderHeight.value = baseH;
+
+  // 👉只修改canvas绘图缓冲区像素大小，**不要修改canvas.style ！！**
+  if (glCanvasRef.value) {
+    glCanvasRef.value.width = newW;
+    glCanvasRef.value.height = baseH;
+    // 删除旧代码： glCanvasRef.value.style.width = ...  glCanvasRef.value.style.height = ...
+  }
+  if (offscreen2dCanvas) {
+    offscreen2dCanvas.width = newW;
+    offscreen2dCanvas.height = baseH;
+  }
+  if (cacheCanvas) {
+    cacheCanvas.width = newW;
+    cacheCanvas.height = baseH;
+  }
+  if (transCanvasA) {
+    transCanvasA.width = newW;
+    transCanvasA.height = baseH;
+  }
+  if (transCanvasB) {
+    transCanvasB.width = newW;
+    transCanvasB.height = baseH;
+  }
+
+  forceFullRender = true;
+  drawFrame();
+}
+
+/**
+ * 根据素材原始宽高，匹配ratioPresets里面的预设比例
+ * @param natW number naturalWidth
+ * @param natH number naturalHeight
+ * @returns null | presetItem
+ */
+function matchAspectPreset(natW, natH) {
+  if (!natW || !natH) return null;
+  const srcRatio = natW / natH;
+  const tolerance = 0.025; // 容差，±2.5%内认为同一个比例，修复浮点误差
+  for (const p of ratioPresets.value) {
+    if(p.value === 'auto') continue;
+    const presetRatio = p.w / p.h;
+    if(Math.abs(srcRatio - presetRatio) < tolerance) {
+      return p;
+    }
+  }
+  return null;
+}
+
+
+
+function confirmSwitchRatio() {
+  if (!targetRatio.value) return;
+  const { w, h } = targetRatio.value;
+  currentRatio.value = targetRatio.value;
+  showConfirmDialog.value = false;
+  applyRatio(w, h);
+}
+
 
 const emit = defineEmits([
   "play",
@@ -553,12 +706,14 @@ function initWebGL() {
 
 /** 上传2D画布图像到WebGL纹理，提交滤镜参数 + 特效参数，绘制到屏幕 */
 function webglRender(off2dCanvas, activeFilterClips, activeEffectClips, canvasB) {
+
   if(!gl || !glProgram) return;
-  gl.viewport(0,0,props.canvasWidth, props.canvasHeight);
+  gl.viewport(0,0,renderWidth.value, renderHeight.value);
 
   // =========【新增：读取激活视频片段调色参数，上传shader】=========
   const activeList = getActiveClips(displayTime.value);
   const videoClipItem = activeList.find(i=>i.clip.type === 'video');
+
   let clipBrightness = 1.0;
   let clipContrast = 1.0;
   let clipSaturation = 1.0;
@@ -597,7 +752,8 @@ function webglRender(off2dCanvas, activeFilterClips, activeEffectClips, canvasB)
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, glNoiseTexture);
 
-  gl.uniform2f(uResolutionLoc, props.canvasWidth, props.canvasHeight);
+  gl.uniform2f(uResolutionLoc, renderWidth.value, renderHeight.value);
+
 
   // ---------- 滤镜参数 ----------
   const keyArr = new Int32Array(8);
@@ -669,6 +825,7 @@ function webglRender(off2dCanvas, activeFilterClips, activeEffectClips, canvasB)
 
   // 所有uniform设置完成，再绘制！！
   gl.drawArrays(gl.TRIANGLES,0,6);
+  
 }
 
 
@@ -711,13 +868,12 @@ function createVideoEl(clipId, src) {
   return videoPool.get(clipId);
 }
 
-function syncVideoSingle(videoInfo, clip, globalTime) {
+function syncVideoSingle(videoInfo, clip, globalTime, isUserSeek = false) {
   const { video } = videoInfo;
   const timelineOffset = globalTime - clip.startTime;
   const clipRate = clip.playbackRate ?? 1.0
   let targetInnerTime = clip.trimStart + timelineOffset / clipRate;
   targetInnerTime = Math.max(clip.trimStart, Math.min(clip.trimEnd, targetInnerTime));
-
   const clipTimelineEnd = clip.endTime;
   const inRange = globalTime >= clip.startTime && globalTime <= clipTimelineEnd;
   if (!inRange) {
@@ -752,14 +908,26 @@ function syncVideoSingle(videoInfo, clip, globalTime) {
   }else if(videoInfo.useNativeVolume){
     video.volume = Math.min(targetVol, 1.0);
   }
-
   const diff = Math.abs(video.currentTime - targetInnerTime);
+
   const nowMs = performance.now();
   // =========新增readyState保护：元数据未就绪，不执行seek，等待视频加载 =========
   const videoReady = video.readyState >= 1;
-  if (videoReady && diff > SYNC_TOLERANCE && nowMs - video._lastSeekMs > SEEK_COOLDOWN) {
-    video.currentTime = targetInnerTime;
+  if(isUserSeek){
+    if(video.readyState >= 1){
+      video.currentTime = targetInnerTime;
+    }else{
+      // 元数据加载完成后再执行seek
+      video.addEventListener('loadedmetadata', () => {
+        video.currentTime = targetInnerTime;
+      }, { once: true });
+    }
     video._lastSeekMs = nowMs;
+  }else{
+    if (videoReady && diff > SYNC_TOLERANCE && nowMs - video._lastSeekMs > SEEK_COOLDOWN) {
+      video.currentTime = targetInnerTime;
+      video._lastSeekMs = nowMs;
+    }
   }
 
   if (isPlaying.value) {
@@ -770,7 +938,7 @@ function syncVideoSingle(videoInfo, clip, globalTime) {
 }
 
 
-function syncAllActiveVideos(time) {
+function syncAllActiveVideos(time, isUserSeek = false) {
   const activeList = getActiveClips(time);
   const activeClipIds = new Set(activeList.map(i => i.clip.id));
 
@@ -782,11 +950,12 @@ function syncAllActiveVideos(time) {
 
   activeList.forEach(({ clip }) => {
     if (clip.type === "audio" || clip.type === "subtitle" || clip.type === "filter" || clip.type === "effect") return;
+    if (clip.sourceType === 'image') return; //图片不进videoPool
     let videoInfo = videoPool.get(clip.id);
     if (!videoInfo) {
       videoInfo = createVideoEl(clip.id, clip.source);
     }
-    syncVideoSingle(videoInfo, clip, time);
+    syncVideoSingle(videoInfo, clip, time,isUserSeek);
   });
 
   const activeAudioClips = activeList.filter(item => item.clip.type === 'audio')
@@ -882,8 +1051,8 @@ function getTextBound(ctx, text, fontSize) {
 
 
 function getBaseDrawSize(naturalW, naturalH) {
-  const cw = props.canvasWidth;
-  const ch = props.canvasHeight;
+  const cw = renderWidth.value;
+  const ch = renderHeight.value;
   const r1 = naturalW / naturalH;
   const r2 = cw / ch;
   let w, h;
@@ -1087,7 +1256,15 @@ function getRotatedRectCorners(cx, cy, w, h, deg) {
 
 // 包围盒、脏矩形
 function getClipBoundingBox(clip) {
-  const tf = clip.transform || { x: props.canvasWidth / 2, y: props.canvasHeight / 2, scale: 1, rotate:0 };
+  const scaleX = renderWidth.value / BASE_CANVAS_W;
+  const scaleY = renderHeight.value / BASE_CANVAS_H;
+  const rawTf = clip.transform || { x: BASE_CANVAS_W / 2, y: BASE_CANVAS_H / 2, scale: 1, rotate:0 };
+  const tf = {
+    x: rawTf.x * scaleX,
+    y: rawTf.y * scaleY,
+    scale: rawTf.scale,
+    rotate: rawTf.rotate
+  };
   let baseW, baseH;
   if (clip.type === 'subtitle') {
     const style = clip.style || { fontSize: 36 };
@@ -1095,7 +1272,7 @@ function getClipBoundingBox(clip) {
     baseW = bound.w;
     baseH = bound.h;
   } else if (clip.type === 'filter' || clip.type === 'effect') {
-    return { x:0, y:0, w:props.canvasWidth, h:props.canvasHeight };
+    return { x:0, y:0, w:renderWidth.value, h:renderHeight.value };
   } else {
     const natW = clip.naturalWidth || 60;
     const natH = clip.naturalHeight || 60;
@@ -1166,7 +1343,7 @@ function renderLoop(timestamp) {
     return;
   }
 
-  syncAllActiveVideos(displayTime.value);
+  syncAllActiveVideos(displayTime.value,false);
   emit("timeupdate", displayTime.value);
   drawFrame().then(() => {
     animationId = requestAnimationFrame(renderLoop);
@@ -1174,9 +1351,19 @@ function renderLoop(timestamp) {
 }
 
 function drawClipSelectBox(clip, baseSize) {
-  const tf = clip.transform;
+  const scaleX = renderWidth.value / BASE_CANVAS_W;
+  const scaleY = renderHeight.value / BASE_CANVAS_H;
+  const rawTf = clip.transform || { x: BASE_CANVAS_W / 2, y: BASE_CANVAS_H / 2, scale: 1, rotate: 0 };
+  const tf = {
+    x: rawTf.x * scaleX,
+    y: rawTf.y * scaleY,
+    scale: rawTf.scale,
+    rotate: rawTf.rotate
+  };
+
   ctx2d.save();
   ctx2d.translate(tf.x, tf.y);
+  ctx2d.rotate((tf.rotate || 0) * Math.PI / 180);
   ctx2d.scale(tf.scale, tf.scale);
   ctx2d.strokeStyle = "#4096ff";
   ctx2d.lineWidth = 2;
@@ -1187,26 +1374,36 @@ function drawClipSelectBox(clip, baseSize) {
   const handleSize = 8;
   const halfW = baseSize.w * tf.scale;
   const halfH = baseSize.h * tf.scale;
+
+  // 旋转后四角手柄位置
+  const rad = (tf.rotate || 0) * Math.PI / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
   HANDLES.forEach(h => {
-    const hx = tf.x + h.dx * halfW;
-    const hy = tf.y + h.dy * halfH;
+    const localX = h.dx * halfW;
+    const localY = h.dy * halfH;
+    const hx = tf.x + localX * cos - localY * sin;
+    const hy = tf.y + localX * sin + localY * cos;
     ctx2d.fillRect(hx - handleSize / 2, hy - handleSize / 2, handleSize, handleSize);
   });
 }
+
 
 // 主绘制：先2D绘制到离屏画布，再交给WebGL做滤镜+特效后处理
 async function drawFrame() {
   if (!ctx2d || !cacheCanvas || !cacheCtx || !offscreen2dCanvas) return;
 
   // =========新增：forceFullRender时，等待范围内视频元数据简单就绪，避免黑屏绘制空帧 =========
-  if(forceFullRender){
+    if(forceFullRender){
     const activeList = getActiveClips(displayTime.value);
     for(const {clip} of activeList){
-      if(clip.type !== "video") continue;
+      if(clip.type !== "video" || clip.sourceType === 'image') continue;
       const info = videoPool.get(clip.id);
       if(!info) continue;
       const video = info.video;
-      if(video.readyState <1){
+      
+      // 1. 先等元数据加载完成
+      if(video.readyState < 1){
         await new Promise(resolve=>{
           const onLoaded = ()=>{
             video.removeEventListener('loadedmetadata', onLoaded);
@@ -1215,6 +1412,22 @@ async function drawFrame() {
           video.addEventListener('loadedmetadata', onLoaded);
         })
       }
+      
+      // 2. 再等目标帧解码完成（seeked），确保drawImage有画面
+      await new Promise(resolve => {
+        // 已经有帧数据直接返回
+        if(video.readyState >= 2){
+          resolve(null);
+          return;
+        }
+        const onSeeked = () => {
+          video.removeEventListener('seeked', onSeeked);
+          resolve(null);
+        }
+        // 触发一次seek，强制加载当前帧
+        video.currentTime = video.currentTime || 0.1;
+        video.addEventListener('seeked', onSeeked);
+      })
     }
   }
 
@@ -1272,14 +1485,12 @@ async function drawFrame() {
         clipB
       }
       // 分别渲染A画面到transCanvasA，B画面到transCanvasB
-      transCtxA.clearRect(0,0,props.canvasWidth,props.canvasHeight);
+      transCtxA.clearRect(0,0,renderWidth.value,renderHeight.value);
       await renderSingleVideoToCanvas(transCtxA, clipA, displayTime.value);
-
-      transCtxB.clearRect(0,0,props.canvasWidth,props.canvasHeight);
+      transCtxB.clearRect(0,0,renderWidth.value,renderHeight.value);
       await renderSingleVideoToCanvas(transCtxB, clipB, displayTime.value);
     }
   }
-
 
   dirtyRects = [];
   videoClips.forEach(({ clip }) => addDirtyRect(getClipBoundingBox(clip)));
@@ -1289,15 +1500,15 @@ async function drawFrame() {
     const sel = activeList.find(i => i.clip.id === selectedClipId.value);
     if (sel) addDirtyRect(getClipBoundingBox(sel.clip));
   }
-  if(filterClips.length>0) addDirtyRect({x:0,y:0,w:props.canvasWidth,h:props.canvasHeight});
+  if(filterClips.length>0) addDirtyRect({x:0,y:0,w:renderWidth.value,h:renderHeight.value});
   // 特效全屏，强制整帧重绘
-  if(activeEffectClips.length>0) addDirtyRect({x:0,y:0,w:props.canvasWidth,h:props.canvasHeight});
+  if(activeEffectClips.length>0) addDirtyRect({x:0,y:0,w:renderWidth.value,h:renderHeight.value});
 
   const mergedRects = mergeDirtyRects();
 
   if (forceFullRender || mergedRects.length === 0) {
     ctx2d.fillStyle = "#000000";
-    ctx2d.fillRect(0, 0, props.canvasWidth, props.canvasHeight);
+    ctx2d.fillRect(0, 0, renderWidth.value, renderHeight.value);
     await renderAllLayers(ctx2d, videoClips, stickerClips, subClips);
 
     cacheCtx.clearRect(0,0,cacheCanvas.width,cacheCanvas.height);
@@ -1326,13 +1537,45 @@ async function drawFrame() {
 }
 
 async function renderSingleVideoToCanvas(drawCtx, videoClip, time) {
-  const tf = videoClip.transform || { x: props.canvasWidth / 2, y: props.canvasHeight / 2, scale: 1 };
+  const scaleX = renderWidth.value / BASE_CANVAS_W;
+  const scaleY = renderHeight.value / BASE_CANVAS_H;
+  const rawTf = videoClip.transform || { x: BASE_CANVAS_W / 2, y: BASE_CANVAS_H / 2, scale: 1 };
+  const tf = {
+    x: rawTf.x * scaleX,
+    y: rawTf.y * scaleY,
+    scale: rawTf.scale,
+    rotate: rawTf.rotate
+  };
   const natW = videoClip.naturalWidth || 1280;
   const natH = videoClip.naturalHeight || 720;
   const baseSize = getBaseDrawSize(natW, natH);
-  const videoInfo = videoPool.get(videoClip.id);
-  const drawSource = videoInfo?.video;
+
+  let drawSource = null;
+
+  // ✅图片素材：加载Image对象
+  if (videoClip.sourceType === 'image') {
+    try {
+      // 封装loadAsset加载图片blob
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = videoClip.source;
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = rej;
+      })
+      drawSource = img;
+    } catch (e) {
+      console.warn('图片片段加载失败', videoClip.id, e);
+      return;
+    }
+  } else {
+    // 普通视频：从视频池取video dom
+    const videoInfo = videoPool.get(videoClip.id);
+    drawSource = videoInfo?.video;
+  }
+
   if (!drawSource) return;
+
   drawCtx.save();
   drawCtx.translate(tf.x, tf.y);
   drawCtx.scale(tf.scale, tf.scale);
@@ -1341,27 +1584,30 @@ async function renderSingleVideoToCanvas(drawCtx, videoClip, time) {
   drawCtx.restore();
 }
 
+
 async function renderAllLayers(drawCtx, videoClips, stickerClips, subClips) {
-  videoClips.forEach(({ clip }) => {
-    const tf = clip.transform || { x: props.canvasWidth / 2, y: props.canvasHeight / 2, scale: 1 };
-    const natW = clip.naturalWidth || 1280;
-    const natH = clip.naturalHeight || 720;
-    const baseSize = getBaseDrawSize(natW, natH);
-    const videoInfo = videoPool.get(clip.id);
-    const drawSource = videoInfo?.video;
-    if (!drawSource) return;
-    drawCtx.save();
-    drawCtx.translate(tf.x, tf.y);
-    drawCtx.scale(tf.scale, tf.scale);
-    drawCtx.globalAlpha = clip.opacity ?? 1.0;
-    drawCtx.drawImage(drawSource, -baseSize.w / 2, -baseSize.h / 2, baseSize.w, baseSize.h);
-    drawCtx.restore();
-    if (selectedClipId.value === clip.id) drawClipSelectBox(clip, baseSize);
-  });
+  // 视频/图片片段统一绘制
+  for (const { clip } of videoClips) {
+    await renderSingleVideoToCanvas(drawCtx, clip, displayTime.value);
+    // 绘制选中框
+    if (selectedClipId.value === clip.id) {
+      const natW = clip.naturalWidth || 1280;
+      const natH = clip.naturalHeight || 720;
+      const baseSize = getBaseDrawSize(natW, natH);
+      drawClipSelectBox(clip, baseSize);
+    }
+  }
 
   for (const { clip } of stickerClips) {
-    const tf = clip.transform || { x: props.canvasWidth / 2, y: props.canvasHeight / 2, scale: 1 };
-    const stickerRotate = clip.rotate ?? 0;
+    const scaleX = renderWidth.value / BASE_CANVAS_W;
+    const scaleY = renderHeight.value / BASE_CANVAS_H;
+    const rawTf = clip.transform || { x: BASE_CANVAS_W / 2, y: BASE_CANVAS_H / 2, scale: 1 };
+    const tf = {
+      x: rawTf.x * scaleX,
+      y: rawTf.y * scaleY,
+      scale: rawTf.scale,
+      rotate: clip.rotate ?? 0
+    };
     const natW = clip.naturalWidth || 60;
     const natH = clip.naturalHeight || 60;
     const baseSize = getBaseDrawSize(natW, natH);
@@ -1372,11 +1618,10 @@ async function renderAllLayers(drawCtx, videoClips, stickerClips, subClips) {
     if (asset.type === "gif") drawSource = getGifFrameCanvas(asset, clip.source);
     else drawSource = asset.img;
     if (!drawSource) continue;
-
     drawCtx.save();
     drawCtx.translate(tf.x, tf.y);
     drawCtx.scale(tf.scale, tf.scale);
-    drawCtx.rotate(stickerRotate * Math.PI / 180);
+    drawCtx.rotate(tf.rotate * Math.PI / 180);
     drawCtx.globalAlpha = clip.opacity ?? 1;
     drawCtx.drawImage(drawSource, -baseSize.w / 2, -baseSize.h / 2, baseSize.w, baseSize.h);
     drawCtx.globalAlpha = 1;
@@ -1384,16 +1629,23 @@ async function renderAllLayers(drawCtx, videoClips, stickerClips, subClips) {
     if (selectedClipId.value === clip.id) drawClipSelectBox(clip, baseSize);
   }
 
-  subClips.forEach(({ clip }) => {
-    const tf = clip.transform || { x: props.canvasWidth / 2, y: props.canvasHeight / 2, scale: 1, rotate:0 };
+
+    subClips.forEach(({ clip }) => {
+    const scaleX = renderWidth.value / BASE_CANVAS_W;
+    const scaleY = renderHeight.value / BASE_CANVAS_H;
+    const rawTf = clip.transform || { x: BASE_CANVAS_W / 2, y: BASE_CANVAS_H / 2, scale: 1, rotate:0 };
+    const tf = {
+      x: rawTf.x * scaleX,
+      y: rawTf.y * scaleY,
+      scale: rawTf.scale,
+      rotate: rawTf.rotate
+    };
     const style = clip.style || { fontSize: 36, fill: '#ffffff', stroke:'#000000', strokeWidth:3 };
     const baseBound = getTextBound(ctx2d, clip.text, style.fontSize);
     drawCtx.save();
     drawCtx.translate(tf.x, tf.y);
     drawCtx.scale(tf.scale, tf.scale);
     drawCtx.rotate(tf.rotate * Math.PI / 180);
-
-    // 使用多行绘制，坐标原点现在是 (0,0) transform坐标系内
     drawMultilineText(
         drawCtx,
         clip.text,
@@ -1404,12 +1656,9 @@ async function renderAllLayers(drawCtx, videoClips, stickerClips, subClips) {
         style.stroke,
         style.strokeWidth
     );
-
     drawCtx.restore();
-
     if (selectedClipId.value === clip.id) {
       const rotate = tf.rotate ?? 0;
-
       drawCtx.save();
       drawCtx.translate(tf.x, tf.y);
       drawCtx.scale(tf.scale, tf.scale);
@@ -1418,10 +1667,8 @@ async function renderAllLayers(drawCtx, videoClips, stickerClips, subClips) {
       drawCtx.lineWidth = 2;
       drawCtx.strokeRect(-baseBound.w / 2, -baseBound.h / 2, baseBound.w, baseBound.h);
       drawCtx.restore();
-
       drawCtx.fillStyle = "#4096ff";
       const handleSize = 8;
-
       const corners = getRotatedRectCorners(
         tf.x,
         tf.y,
@@ -1429,7 +1676,6 @@ async function renderAllLayers(drawCtx, videoClips, stickerClips, subClips) {
         baseBound.h * tf.scale,
         rotate
       );
-
       corners.forEach(point => {
         drawCtx.fillRect(
           point.x - handleSize / 2,
@@ -1440,6 +1686,7 @@ async function renderAllLayers(drawCtx, videoClips, stickerClips, subClips) {
       });
     }
   });
+
 }
 
 /**
@@ -1484,60 +1731,65 @@ async function renderLayersInRect(drawCtx, videoClips, stickerClips, subClips, r
   const intersect = (box) => {
     return box.x < x+w && box.x+box.w > x && box.y < y+h && box.y+box.h > y;
   };
+  // 视频/图片片段统一绘制
   for(const {clip} of videoClips){
     const box = getClipBoundingBox(clip);
     if(!intersect(box)) continue;
-    const tf = clip.transform || { x: props.canvasWidth / 2, y: props.canvasHeight / 2, scale: 1 };
-    const natW = clip.naturalWidth || 1280;
-    const natH = clip.naturalHeight || 720;
+    await renderSingleVideoToCanvas(drawCtx, clip, displayTime.value);
+    if (selectedClipId.value === clip.id) {
+      const natW = clip.naturalWidth || 1280;
+      const natH = clip.naturalHeight || 720;
+      const baseSize = getBaseDrawSize(natW, natH);
+      drawClipSelectBox(clip, baseSize);
+    }
+  }
+  for (const { clip } of stickerClips) {
+    const scaleX = renderWidth.value / BASE_CANVAS_W;
+    const scaleY = renderHeight.value / BASE_CANVAS_H;
+    const rawTf = clip.transform || { x: BASE_CANVAS_W / 2, y: BASE_CANVAS_H / 2, scale: 1 };
+    const tf = {
+      x: rawTf.x * scaleX,
+      y: rawTf.y * scaleY,
+      scale: rawTf.scale,
+      rotate: clip.rotate ?? 0
+    };
+    const natW = clip.naturalWidth || 60;
+    const natH = clip.naturalHeight || 60;
     const baseSize = getBaseDrawSize(natW, natH);
-    const videoInfo = videoPool.get(clip.id);
-    const drawSource = videoInfo?.video;
+    let asset;
+    try { asset = await loadAsset(clip.source); } catch (e) { continue; }
+    if (!asset.loaded) continue;
+    let drawSource;
+    if (asset.type === "gif") drawSource = getGifFrameCanvas(asset, clip.source);
+    else drawSource = asset.img;
     if (!drawSource) continue;
     drawCtx.save();
     drawCtx.translate(tf.x, tf.y);
     drawCtx.scale(tf.scale, tf.scale);
-    drawCtx.globalAlpha = clip.opacity ?? 1.0;
+    drawCtx.rotate(tf.rotate * Math.PI / 180);
+    drawCtx.globalAlpha = clip.opacity ?? 1;
     drawCtx.drawImage(drawSource, -baseSize.w / 2, -baseSize.h / 2, baseSize.w, baseSize.h);
+    drawCtx.globalAlpha = 1;
     drawCtx.restore();
     if (selectedClipId.value === clip.id) drawClipSelectBox(clip, baseSize);
   }
-  for (const { clip } of stickerClips) {
-      const box = getClipBoundingBox(clip);
-      if(!intersect(box)) continue;
-      const tf = clip.transform || { x: props.canvasWidth / 2, y: props.canvasHeight / 2, scale: 1 };
-      const stickerRotate = clip.rotate ?? 0;
-      const natW = clip.naturalWidth || 60;
-      const natH = clip.naturalHeight || 60;
-      const baseSize = getBaseDrawSize(natW, natH);
-      let asset;
-      try { asset = await loadAsset(clip.source); } catch (e) { continue; }
-      if (!asset.loaded) continue;
-      let drawSource;
-      if (asset.type === "gif") drawSource = getGifFrameCanvas(asset, clip.source);
-      else drawSource = asset.img;
-      if (!drawSource) continue;
-      drawCtx.save();
-      drawCtx.translate(tf.x, tf.y);
-      drawCtx.scale(tf.scale, tf.scale);
-      drawCtx.rotate(stickerRotate * Math.PI / 180);
-      drawCtx.globalAlpha = clip.opacity ??1;
-      drawCtx.drawImage(drawSource, -baseSize.w / 2, -baseSize.h / 2, baseSize.w, baseSize.h);
-      drawCtx.globalAlpha =1;
-      drawCtx.restore();
-      if (selectedClipId.value === clip.id) drawClipSelectBox(clip, baseSize);
-    }
-    for(const {clip} of subClips){
-    const box = getClipBoundingBox(clip);
-    if(!intersect(box)) continue;
-    const tf = clip.transform || { x: props.canvasWidth / 2, y: props.canvasHeight / 2, scale:1, rotate:0 };
+
+  subClips.forEach(({ clip }) => {
+    const scaleX = renderWidth.value / BASE_CANVAS_W;
+    const scaleY = renderHeight.value / BASE_CANVAS_H;
+    const rawTf = clip.transform || { x: BASE_CANVAS_W / 2, y: BASE_CANVAS_H / 2, scale: 1, rotate:0 };
+    const tf = {
+      x: rawTf.x * scaleX,
+      y: rawTf.y * scaleY,
+      scale: rawTf.scale,
+      rotate: rawTf.rotate
+    };
     const style = clip.style || { fontSize: 36, fill: '#ffffff', stroke:'#000000', strokeWidth:3 };
-    const baseBound = getTextBound(drawCtx, clip.text, style.fontSize);
+    const baseBound = getTextBound(ctx2d, clip.text, style.fontSize);
     drawCtx.save();
     drawCtx.translate(tf.x, tf.y);
     drawCtx.scale(tf.scale, tf.scale);
     drawCtx.rotate(tf.rotate * Math.PI / 180);
-
     drawMultilineText(
         drawCtx,
         clip.text,
@@ -1548,12 +1800,9 @@ async function renderLayersInRect(drawCtx, videoClips, stickerClips, subClips, r
         style.stroke,
         style.strokeWidth
     );
-
     drawCtx.restore();
-
     if (selectedClipId.value === clip.id) {
       const rotate = tf.rotate ?? 0;
-
       drawCtx.save();
       drawCtx.translate(tf.x, tf.y);
       drawCtx.scale(tf.scale, tf.scale);
@@ -1562,10 +1811,8 @@ async function renderLayersInRect(drawCtx, videoClips, stickerClips, subClips, r
       drawCtx.lineWidth = 2;
       drawCtx.strokeRect(-baseBound.w / 2, -baseBound.h / 2, baseBound.w, baseBound.h);
       drawCtx.restore();
-
       drawCtx.fillStyle = "#4096ff";
       const handleSize = 8;
-
       const corners = getRotatedRectCorners(
         tf.x,
         tf.y,
@@ -1573,7 +1820,6 @@ async function renderLayersInRect(drawCtx, videoClips, stickerClips, subClips, r
         baseBound.h * tf.scale,
         rotate
       );
-
       corners.forEach(point => {
         drawCtx.fillRect(
           point.x - handleSize / 2,
@@ -1583,7 +1829,8 @@ async function renderLayersInRect(drawCtx, videoClips, stickerClips, subClips, r
         );
       });
     }
-  }
+  });
+
 
 }
 
@@ -1595,7 +1842,7 @@ async function play() {
   isPlaying.value = true;
   emit("play");
   window._lastTs = performance.now();
-  syncAllActiveVideos(displayTime.value);
+  syncAllActiveVideos(displayTime.value,false);
   animationId = requestAnimationFrame(renderLoop);
 }
 
@@ -1619,7 +1866,7 @@ async function setCurrentTime(sec, isUserSeek = false) {
   } else if (isPlaying.value) {
     window._lastTs = performance.now();
   }
-  syncAllActiveVideos(displayTime.value);
+  syncAllActiveVideos(displayTime.value,isUserSeek);
   await drawFrame();
   emit("seeked", displayTime.value);
 }
@@ -1645,7 +1892,16 @@ function toggleMute() {
 
 // 鼠标交互（坐标转换到画布）
 function hitHandle(clip, mx, my) {
-  const tf = clip.transform;
+  const scaleX = renderWidth.value / BASE_CANVAS_W;
+  const scaleY = renderHeight.value / BASE_CANVAS_H;
+  const rawTf = clip.transform || { x: BASE_CANVAS_W / 2, y: BASE_CANVAS_H / 2, scale: 1, rotate: 0 };
+  const tf = {
+    x: rawTf.x * scaleX,
+    y: rawTf.y * scaleY,
+    scale: rawTf.scale,
+    rotate: rawTf.rotate
+  };
+
   let baseW, baseH;
   if (clip.type === 'subtitle') {
     const style = clip.style || { fontSize: 36 };
@@ -1661,12 +1917,19 @@ function hitHandle(clip, mx, my) {
     baseW = base.w;
     baseH = base.h;
   }
+
   const halfW = baseW * tf.scale;
   const halfH = baseH * tf.scale;
   const range = 12;
+  const rad = (tf.rotate || 0) * Math.PI / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+
   for (const h of HANDLES) {
-    const hx = tf.x + h.dx * halfW;
-    const hy = tf.y + h.dy * halfH;
+    const localX = h.dx * halfW;
+    const localY = h.dy * halfH;
+    const hx = tf.x + localX * cos - localY * sin;
+    const hy = tf.y + localX * sin + localY * cos;
     const dist = Math.hypot(mx - hx, my - hy);
     if (dist < range) {
       return h.key;
@@ -1677,7 +1940,16 @@ function hitHandle(clip, mx, my) {
 
 function isPointInClip(clip, mx, my) {
   if(clip.type === 'filter' || clip.type === 'effect') return false;
-  const tf = clip.transform || { x: props.canvasWidth / 2, y: props.canvasHeight / 2, scale: 1 };
+  const scaleX = renderWidth.value / BASE_CANVAS_W;
+  const scaleY = renderHeight.value / BASE_CANVAS_H;
+  const rawTf = clip.transform || { x: BASE_CANVAS_W / 2, y: BASE_CANVAS_H / 2, scale: 1 };
+  const tf = {
+    x: rawTf.x * scaleX,
+    y: rawTf.y * scaleY,
+    scale: rawTf.scale,
+    rotate: rawTf.rotate
+  };
+
   let baseW, baseH;
   if (clip.type === 'subtitle') {
     const style = clip.style || { fontSize: 36 };
@@ -1691,9 +1963,19 @@ function isPointInClip(clip, mx, my) {
     baseW = base.w;
     baseH = base.h;
   }
+
+  // 旋转点逆变换，转换到素材本地坐标系再判断
+  const rad = (tf.rotate || 0) * Math.PI / 180;
+  const cos = Math.cos(-rad);
+  const sin = Math.sin(-rad);
+  const dx = mx - tf.x;
+  const dy = my - tf.y;
+  const localX = dx * cos - dy * sin;
+  const localY = dx * sin + dy * cos;
+
   const hw = baseW / 2 * tf.scale;
   const hh = baseH / 2 * tf.scale;
-  return mx >= tf.x - hw && mx <= tf.x + hw && my >= tf.y - hh && my <= tf.y + hh;
+  return localX >= -hw && localX <= hw && localY >= -hh && localY <= hh;
 }
 
 function handleCanvasMouseDown(e) {
@@ -1750,14 +2032,22 @@ function handleCanvasMouseMove(e) {
   const ds = dragState.value;
   const clip = ds.clip;
 
+  const scaleX = renderWidth.value / BASE_CANVAS_W;
+  const scaleY = renderHeight.value / BASE_CANVAS_H;
+
   if (ds.mode === "move") {
-    const dx = mx - ds.startX;
-    const dy = my - ds.startY;
+    const dx = (mx - ds.startX) / scaleX;
+    const dy = (my - ds.startY) / scaleY;
     clip.transform.x = ds.originX + dx;
     clip.transform.y = ds.originY + dy;
   } else if (ds.mode === "scale") {
-    const dx = mx - clip.transform.x;
-    const dy = my - clip.transform.y;
+    // 渲染坐标系下的素材中心点
+    const cx = clip.transform.x * scaleX;
+    const cy = clip.transform.y * scaleY;
+    // 渲染坐标系下，鼠标相对中心的偏移（不转回基准，和base尺寸单位统一）
+    const dx = mx - cx;
+    const dy = my - cy;
+
     let baseW, baseH;
     if (clip.type === 'subtitle') {
       const style = clip.style || { fontSize: 36 };
@@ -1771,14 +2061,28 @@ function handleCanvasMouseMove(e) {
       baseW = base.w;
       baseH = base.h;
     }
+
+    const halfBaseW = baseW / 2;
+    const halfBaseH = baseH / 2;
     let factor;
+
     switch (ds.handleKey) {
-      case "rb": factor = Math.max(dx / (baseW / 2), dy / (baseH / 2)); break;
-      case "lt": factor = Math.max(-dx / (baseW / 2), -dy / (baseH / 2)); break;
-      case "rt": factor = Math.max(dx / (baseW / 2), -dy / (baseH / 2)); break;
-      case "lb": factor = Math.max(-dx / (baseW / 2), dy / (baseH / 2)); break;
-      default: factor = 1;
+      case "rb": // 右下角：右+、下+ → 放大
+        factor = Math.max(dx / halfBaseW, dy / halfBaseH);
+        break;
+      case "lt": // 左上角：左-、上- → 放大
+        factor = Math.max(-dx / halfBaseW, -dy / halfBaseH);
+        break;
+      case "rt": // 右上角：右+、上- → 放大
+        factor = Math.max(dx / halfBaseW, -dy / halfBaseH);
+        break;
+      case "lb": // 左下角：左-、下+ → 放大
+        factor = Math.max(-dx / halfBaseW, dy / halfBaseH);
+        break;
+      default:
+        factor = 1;
     }
+
     clip.transform.scale = Math.max(factor, 0.15);
   }
   drawFrame();
@@ -1821,6 +2125,52 @@ nextTick(() => {
   forceFullRender = true;
   drawFrame();
 });
+
+const allMediaClips = computed(()=>{
+  const arr = [];
+  if(!props.trackData?.tracks) return arr;
+  for(const track of props.trackData.tracks) {
+    if(!track.visible) continue;
+    for(const clip of track.clips) {
+      if(clip.type === 'video' && clip.naturalWidth && clip.naturalHeight) {
+        arr.push(clip);
+      }
+    }
+  }
+  return arr;
+})
+
+watch(allMediaClips, (newClips, oldClips) => {
+  const oldLen = Array.isArray(oldClips) ? oldClips.length : 0
+  const newLen = newClips.length
+
+  // ========== 第一个素材出现，更新【自适应】原始尺寸 ==========
+  if (oldLen === 0 && newLen >= 1) {
+    const firstClip = newClips[0]
+    if (firstClip.naturalWidth && firstClip.naturalHeight) {
+      autoCanvasSize.value = {
+        w: firstClip.naturalWidth,
+        h: firstClip.naturalHeight
+      }
+    }
+
+    // 原有逻辑：匹配预设比例弹窗
+    const matchPreset = matchAspectPreset(firstClip.naturalWidth, firstClip.naturalHeight)
+    if (matchPreset) {
+      targetRatio.value = matchPreset
+      showRatioDropdown.value = false
+      showConfirmDialog.value = true
+    }
+    return
+  }
+
+  // ========== 全部素材清空，恢复默认自适应尺寸 ==========
+  if (newLen === 0) {
+    autoCanvasSize.value = { w: 1880, h: 1080 }
+  }
+}, { deep: true })
+
+
 
 
 watch(() => props.currentTime, async (t) => {
@@ -1887,24 +2237,42 @@ defineExpose({
   play,
   pause,
   toggleMute,
-  setCurrentTime
+  setCurrentTime,
+  currentRatio // 新增：暴露当前选中的比例配置
 });
 </script>
 
 <style scoped>
-.preview-wrapper {
+.preview-container {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap:10px;
 }
-.preview-canvas {
-  border: 1px solid #3a3a4c;
-  background: #000;
+
+.canvas-wrapper {
+  /* 关键：预留最大可用区域，竖屏不会无限撑高页面 */
+  max-width: 100%;
+  max-height: calc(100vh - 140px);
+  display: flex;
+  justify-content: center;
+  overflow: auto;
 }
+
+.canvas-wrapper canvas {
+  /* buffer像素大小由js设置；页面显示大小交给contain保持原始比例，不拉伸变形 */
+  max-width:100%;
+  max-height:100%;
+  object-fit:contain;
+}
+
 .control-bar {
+  margin-top:10px;
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-shrink: 0; /* ✅非常关键：控制栏禁止被flex压缩，永远保留在页面底部，不会被canvas挤没 */
 }
+
 button {
   padding: 6px 14px;
   border: none;
@@ -1913,4 +2281,106 @@ button {
   color: #fff;
   cursor: pointer;
 }
+
+/* 下面ratio‑wrap、ratio‑btn、dropdown、confirm弹窗样式保持原有不变 */
+.ratio-wrap {
+  margin-left: auto;
+  position: relative;
+}
+.ratio-btn {
+  padding: 6px 14px;
+  background: #333644;
+  color: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  min-width: 140px;
+  text-align: center;
+}
+.ratio-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  background: #2a2d3b;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 200px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  z-index: 100;
+}
+.ratio-option {
+  padding: 8px 16px;
+  color: #ccc;
+  cursor: pointer;
+  font-size:14px;
+}
+.ratio-option:hover,.ratio-option.active {
+  background:#525aff;
+  color:#fff;
+}
+.confirm-mask {
+  position: fixed;
+  inset:0;
+  background:rgba(0,0,0,0.6);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  z-index:999;
+}
+.confirm-dialog {
+  width:520px;
+  background:#2a2d3b;
+  border-radius:8px;
+  color:#fff;
+  overflow:hidden;
+}
+.confirm-header {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:16px 20px;
+  font-size:18px;
+  font-weight:500;
+}
+.warn-icon {
+  width:28px;height:28px;
+  border-radius:50%;
+  background:#faad14;
+  color:#fff;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-weight:bold;
+  font-size:18px;
+}
+.confirm-body {
+  padding:0 20px 20px;
+  line-height:1.8;
+  color:#ddd;
+  font-size:15px;
+}
+.confirm-footer {
+  padding:14px 20px;
+  border-top:1px solid #333647;
+  display:flex;
+  justify-content:flex-end;
+  gap:12px;
+}
+.btn-cancel {
+  padding:6px 18px;
+  background:#333647;
+  color:#fff;
+  border:none;
+  border-radius:4px;
+  cursor:pointer;
+}
+.btn-confirm {
+  padding:6px 18px;
+  background:#1890ff;
+  color:#fff;
+  border:none;
+  border-radius:4px;
+  cursor:pointer;
+}
+
 </style>
