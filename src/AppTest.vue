@@ -56,13 +56,47 @@
               </div>
             </div>
           </div>
+          
+          <!-- ========== 图片Tab【新增】 ========== -->
+          <div v-if="activeTab === 'image'">
+            <div class="import-btn" @click="imageFileInput.click()">+ 导入图片素材</div>
+            <input
+              ref="imageFileInput"
+              type="file"
+              accept="image/*"
+              multiple
+              style="display:none"
+              @change="handleSelectImage"
+            />
+            <div class="material-list">
+              <div
+                v-for="item in getMaterialList()"
+                :key="item.id"
+                class="material-item"
+                draggable="true"
+                @dragstart="handleMaterialDragStart($event, item)"
+              >
+                <div
+                  class="thumb"
+                  :style="{ backgroundImage: item.cover ? `url(${item.cover})` : '' }"
+                >
+                  <div class="thumb-action">
+                    <span class="btn-add" @click.stop="addMaterialToTrack(item)">+</span>
+                    <span class="btn-del" @click.stop="deleteMaterial(item.id)">🗑</span>
+                  </div>
+                </div>
+                <div class="name">{{ item.name }}</div>
+              </div>
+            </div>
+          </div>
+
 
           <div v-if="activeTab === 'audio'">
             <div class="import-btn" @click="audioFileInput.click()">+ 导入音频素材</div>
             <input
               ref="audioFileInput"
               type="file"
-              accept="audio/*"
+              accept="audio/*,.aac"
               multiple
               style="display:none"
               @change="handleSelectAudio"
@@ -251,6 +285,7 @@
         ref="videoTrackRef"
         :enable-main-track-mode="true"
         :track-types="trackTypes"
+        :clip-configs="clipConfigs"
         :operation-buttons="operationButtons"
         :enable-snap="true"
         :snap-threshold="10"
@@ -268,6 +303,8 @@
         @track-sort="handleTrackSort"
         @dragover="onTimelineDragOver"
         @drop="onTimelineDrop"
+        @add-transition="handleAddTransition"
+        @transition-added="handleTransitionAdded"
       />
     </div>
   </div>
@@ -311,7 +348,7 @@
                   <option value="720p">720p</option>
                   <option value="540p">540p</option>
                   <option value="480p">480p</option>
-                  <option value="origin">原始分辨率</option>
+                  <option value="original">原始分辨率</option>
                 </select>
               </div>
               <div class="setting-row">
@@ -334,7 +371,6 @@
                 <label>编码</label>
                 <select v-model="exportOptions.codec">
                   <option value="h264">H.264</option>
-                  <option value="h265">H.265</option>
                 </select>
               </div>
             </div>
@@ -361,6 +397,7 @@ import PropertyPanel from './components/PropertyPanel.vue'
 const activeTab = ref('video')
 const resourceTabs = [
   { type: 'video', label: ' 视频 ' },
+  { type: 'image', label: ' 图片 ' },
   { type: 'audio', label: ' 音频 ' },
   { type: 'text', label: ' 字幕 ' },
   { type: 'sticker', label: ' 贴纸 ' },
@@ -386,6 +423,15 @@ const filterCategoryList = [
   { key: 'art', label: '艺术' }
 ]
 const activeFilterCat = ref('film')
+
+const clipConfigs = ref({
+  transition: {
+    resizable: true,      // 开启左右拉伸手柄，修改时长
+    draggable: false,     // ❗禁止整体拖拽移动转场块，转场固定在两段视频缝隙
+    minDuration: 0.2,     // 最小可拖拽时长
+    maxDuration: 3        // 最大转场时长
+  }
+})
 
 /**
  * filterKey：滤镜唯一标识，给VideoPreview识别滤镜逻辑使用
@@ -437,6 +483,21 @@ const stickerSourceMap: Record<string, Array<{src:string}>> = {
   ]
 }
 const currentStickerList = computed(() => stickerSourceMap[activeStickerCat.value] || [])
+
+const TRANSITION_DEFAULT_DURATION = 1 // 默认总转场时长 1s
+interface TransitionClip {
+  id: string
+  type: 'transition'
+  name: string
+  transitionType: string
+  transitionDuration:number
+  startTime: number
+  endTime: number
+  trimStart: number,
+  trimEnd: number,
+  beforeClipId: string
+  afterClipId: string
+}
 
 // =====================【特效配置 新增】=====================
 const effectCategoryList = [
@@ -501,7 +562,7 @@ const trackTypes = ref({
   subtitle: { max: 10 },
   filter: { max: 8 },
   effect: { max:8 },
-  transition: { max: 8 }
+  image: { max: 10 } // 【新增图片轨道】
 })
 
 const operationButtons = [
@@ -515,6 +576,7 @@ const operationButtons = [
 // 拆分两个文件输入框
 const videoFileInput = ref(null)
 const audioFileInput = ref(null)
+const imageFileInput = ref(null)
 
 const currentTime = ref(0)
 const selectedClip = ref(null)
@@ -526,7 +588,7 @@ let lockMove = false
 const getMaterialList = () => materialStore.value[activeTab.value] || []
 
 // =========简易toast轻提示，自动消失，挂载body==========
-function showToast(message: string, duration = 2500) {
+function showToast(message: string, duration?: number) {
   const div = document.createElement('div')
   div.innerText = message
   div.style.cssText = `
@@ -543,11 +605,22 @@ function showToast(message: string, duration = 2500) {
     font-size:14px;
   `
   document.body.appendChild(div)
-  setTimeout(() => {
-    div.style.opacity = '0'
-    div.style.transition = 'opacity 0.3s'
-    setTimeout(() => div.remove(), 300)
-  }, duration)
+
+  const close = () => {
+    if (div.parentNode) {
+      div.style.opacity = '0'
+      div.style.transition = 'opacity 0.3s'
+      setTimeout(() => div.remove(), 300)
+    }
+  }
+
+  if (duration) {
+    setTimeout(() => {
+      close()
+    }, duration)
+  }
+
+  return close
 }
 
 // ==========导出弹窗相关状态==========
@@ -575,6 +648,69 @@ function getFirstVideoClip() {
   }
   return null
 }
+
+// 导入图片素材【新增】
+const handleSelectImage = async (e: Event) => {
+  const target = e.target as HTMLInputElement
+  const files = target.files
+  if (!files || files.length === 0) return
+  const MAX_SIZE = 20 * 1024 * 1024 // 20MB图片限制
+  const overFiles: File[] = []
+  const validFiles: File[] = []
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]
+    if (file.size > MAX_SIZE) {
+      overFiles.push(file)
+    } else {
+      validFiles.push(file)
+    }
+  }
+  if (overFiles.length) {
+    const names = overFiles.map(f => f.name).join('、')
+    alert(`以下文件超过20MB限制：${names}`)
+  }
+  if (validFiles.length === 0) {
+    target.value = ''
+    return
+  }
+  for (let i = 0; i < validFiles.length; i++) {
+    const file = validFiles[i]
+    const imgUrl = URL.createObjectURL(file)
+    // 获取图片宽高
+    const meta = await getImageMeta(imgUrl)
+    const newImageItem = {
+      id: `mat-img-${Date.now()}-${i}`,
+      name: file.name,
+      source: imgUrl,
+      duration: 5, // 图片默认时长5秒
+      naturalWidth: meta.width,
+      naturalHeight: meta.height,
+      materialType: 'image',
+      cover: imgUrl
+    }
+    materialStore.value.image.push(newImageItem)
+  }
+  target.value = ''
+}
+
+// 获取图片元信息 宽高
+function getImageMeta(url: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.src = url
+    img.onload = () => {
+      resolve({
+        width: img.naturalWidth,
+        height: img.naturalHeight
+      })
+    }
+    img.onerror = (err) => {
+      reject(err)
+    }
+  })
+}
+
 
 // ===== 拖拽素材 =====
 let dragMaterial:any = null
@@ -647,37 +783,72 @@ async function captureVideoFirstFrame(videoSrc: string): Promise<string> {
   })
 }
 
+/** 根据图片url生成首帧预览base64 */
+async function captureImageFirstFrame(imgSrc: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.src = imgSrc
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = img.naturalWidth
+      canvas.height = img.naturalHeight
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(img, 0, 0)
+      const base64 = canvas.toDataURL('image/jpeg', 0.8)
+      img.remove()
+      canvas.remove()
+      resolve(base64)
+    }
+    img.onerror = () => {
+      img.remove()
+      resolve('')
+    }
+  })
+}
+
 /** 打开导出弹窗 */
 async function openExportDialog() {
   const firstVideoClip = getFirstVideoClip()
-
   if (!firstVideoClip) {
-    showToast('当前创作轨道无有效素材，请添加素材后再发起合成。')
+    showToast('当前创作轨道无有效素材，请添加素材后再发起合成。',2500)
     return
   }
   exportDialogVisible.value = true
   exportPreviewImg.value = ''
-  // 截取首帧
-  const base64Img = await captureVideoFirstFrame(firstVideoClip.source)
+  // 截取首帧：兼容图片/视频素材
+  let base64Img = ''
+  if (firstVideoClip.sourceType === 'image') {
+    base64Img = await captureImageFirstFrame(firstVideoClip.source)
+  } else {
+    base64Img = await captureVideoFirstFrame(firstVideoClip.source)
+  }
   exportPreviewImg.value = base64Img
-
 }
+
 
 function closeExportDialog() {
   exportDialogVisible.value = false
 }
 
-/**
- * 上传单个blob url到后端，返回后端资源url
- * @param blobUrl blob:http://xxx
- */
 async function uploadBlobSource(blobUrl: string): Promise<string> {
   const resp = await fetch(blobUrl);
   const blob = await resp.blob();
-
+  // MIME类型映射文件后缀
+  const mimeToExt: Record<string, string> = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'audio/mpeg': '.mp3',
+    'audio/wav': '.wav',
+    'audio/aac': '.aac',
+  };
+  const ext = mimeToExt[blob.type] || '.mp4';
   const formData = new FormData();
-  formData.append("mediaFile", blob, "temp_media");
-
+  formData.append("mediaFile", blob, `media${ext}`);
   const uploadRes = await fetch("http://127.0.0.1:8095/api/media/upload-blob", {
     method: "POST",
     body: formData
@@ -689,47 +860,49 @@ async function uploadBlobSource(blobUrl: string): Promise<string> {
   return json.resourceUrl;
 }
 
-/** 遍历轨道，把所有blob://的source全部上传替换 */
+
 async function replaceAllBlobSources(tracks: any[]) {
-  // 收集所有需要上传的clip
-  const todoList: Array<{ trackIdx: number; clipIdx: number; blobUrl: string }> = [];
+  // 收集所有需要上传的clip（区分素材类型）
+  const todoList: Array<{ trackIdx: number; clipIdx: number; blobUrl: string; sourceType: string }> = [];
   tracks.forEach((track, trackIdx) => {
     track.clips.forEach((clip: any, clipIdx: number) => {
       const src = clip.source;
       if (src && typeof src === "string" && src.startsWith("blob:")) {
-        todoList.push({ trackIdx, clipIdx, blobUrl: src });
+        todoList.push({ 
+          trackIdx, 
+          clipIdx, 
+          blobUrl: src,
+          sourceType: clip.sourceType || 'video'
+        });
       }
     });
   });
-
   if (todoList.length === 0) return tracks;
-
-  showToast(`检测到${todoList.length}个blob素材，正在上传…`);
-
+  showToast(`检测到${todoList.length}个素材，正在上传…`,2500);
   // 顺序串行上传，防止并发过高
   for (const item of todoList) {
     const newUrl = await uploadBlobSource(item.blobUrl);
     const track = tracks[item.trackIdx];
     track.clips[item.clipIdx].source = newUrl;
-
-    console.log('-----------newUrl--',newUrl)
-
+    console.log(`-----------${item.sourceType}素材新地址--`, newUrl)
   }
   return tracks;
 }
 
+
 /** 开始导出 */
 async function handleStartExport() {
   if (!getFirstVideoClip()) {
-    alert('当前创作轨道无有效素材，请添加素材后再发起合成。')
+    alert('当前创作轨道无有效素材，请添加素材后再发起合成。',2500)
     return
   }
   closeExportDialog()
-  showToast("开始提交导出任务，请稍候…")
-
-  console.log('-------------a')
-
+  showToast("开始提交导出任务，请稍候…",2500)
   const exportTracks = JSON.parse(JSON.stringify(trackData.value.tracks));
+
+  // =========新增：兜底规范化，保证只存在一条mainTrack=true========
+  normalizeSingleMainTrack(exportTracks);
+
   await replaceAllBlobSources(exportTracks);
 
   // ========== 新增：subtitle字幕换行符替换 \n → \\N 适配ffmpeg drawtext ==========
@@ -741,10 +914,18 @@ async function handleStartExport() {
     }
   }
 
+  // ========== 新增：获取当前画布比例 ==========
+  const previewRatio = previewRef.value?.currentRatio || { w: 16, h: 9 };
+
   const payload = {
-    exportOptions: { ...exportOptions.value },
+    exportOptions: { 
+      ...exportOptions.value,
+      ratioW: previewRatio.w,
+      ratioH: previewRatio.h
+    },
     tracks: exportTracks
   }
+
 
   try {
     const resp = await fetch("http://127.0.0.1:8095/api/export/render", {
@@ -756,7 +937,7 @@ async function handleStartExport() {
     })
     const res = await resp.json()
     if(!res.success){
-      showToast(`任务提交失败：${res.msg}`)
+      showToast(`任务提交失败：${res.msg}`,2500)
       return
     }
     const taskId = res.taskId
@@ -766,24 +947,24 @@ async function handleStartExport() {
       const stat = await statResp.json()
       if(!stat.success){
         clearInterval(pollTimer)
-        showToast("查询任务失败")
+        showToast("查询任务失败",2500)
         return
       }
-      showToast(`渲染进度：${stat.progress}%`)
+      showToast(`渲染进度：${stat.progress}%`,2500)
       if(stat.status === 'finished'){
         clearInterval(pollTimer)
-        showToast(`渲染完成！${stat.downloadUrl}`)
+        showToast(`渲染完成！${stat.downloadUrl}`,2500)
         console.log('渲染完成！-----',stat.downloadUrl)
         //window.open(stat.downloadUrl)
       }else if(stat.status === 'failed'){
         clearInterval(pollTimer)
-        showToast(`渲染失败:${stat.errorMsg}`)
+        showToast(`渲染失败:${stat.errorMsg}`,2500)
       }
     },1000)
 
   } catch(err: any) {
     console.error(err)
-    showToast("导出异常：" + (err?.message || String(err)))
+    showToast("导出异常：" + (err?.message || String(err)),2500)
   }
 }
 
@@ -793,11 +974,10 @@ const handleSelectVideo = async (e: Event) => {
   const target = e.target as HTMLInputElement
   const files = target.files
   if (!files || files.length === 0) return
-
-  const MAX_SIZE = 50 * 1024 * 1024 // 50MB
+  const closeToast = showToast('正在加载视频素材，请稍候...')
+  const MAX_SIZE = 100 * 1024 * 1024 // 100MB
   const overFiles: File[] = []
   const validFiles: File[] = []
-
   for (let i = 0; i < files.length; i++) {
     const file = files[i]
     if (file.size > MAX_SIZE) {
@@ -806,41 +986,36 @@ const handleSelectVideo = async (e: Event) => {
       validFiles.push(file)
     }
   }
-
   if (overFiles.length) {
     const names = overFiles.map(f => f.name).join('、')
-    alert(`以下文件超过50MB限制：${names}`)
+    alert(`以下文件超过100MB限制：${names}`)
   }
-
   if (validFiles.length === 0) {
     target.value = ''
+    closeToast()
     return
   }
-
-  for (let i = 0; i < validFiles.length; i++) {
-    const file = validFiles[i]
-    const videoUrl = URL.createObjectURL(file)
-
-    const cover = await captureVideoCover(videoUrl)
-    const meta = await getVideoMeta(videoUrl)
-    const duration = meta.duration
-    const width = meta.width
-    const height = meta.height
-
-    const newVideoItem = {
-      id: `mat-${Date.now()}-${i}`,
-      name: file.name,
-      source: videoUrl,
-      duration,
-      naturalWidth: meta.width,
-      naturalHeight: meta.height,
-      materialType: 'video',
-      cover
+  try {
+    for (let i = 0; i < validFiles.length; i++) {
+      const file = validFiles[i]
+      const videoUrl = URL.createObjectURL(file)
+      const cover = await captureVideoCover(videoUrl)
+      const meta = await getVideoMeta(videoUrl)
+      const newVideoItem = {
+        id: `mat-${Date.now()}-${i}`,
+        name: file.name,
+        source: videoUrl,
+        duration: meta.duration,
+        naturalWidth: meta.width,
+        naturalHeight: meta.height,
+        materialType: 'video',
+        cover
+      }
+      materialStore.value.video.push(newVideoItem)
     }
-
-    materialStore.value.video.push(newVideoItem)
+  } finally {
+    closeToast()
   }
-
   target.value = ''
 }
 
@@ -849,11 +1024,10 @@ const handleSelectAudio = async (e: Event) => {
   const target = e.target as HTMLInputElement
   const files = target.files
   if (!files || files.length === 0) return
-
-  const MAX_SIZE = 10 * 1024 * 1024 // 10MB
+  const closeToast = showToast('正在加载音频素材，请稍候...')
+  const MAX_SIZE = 100 * 1024 * 1024 // 100MB
   const overFiles: File[] = []
   const validFiles: File[] = []
-
   for (let i = 0; i < files.length; i++) {
     const file = files[i]
     if (file.size > MAX_SIZE) {
@@ -862,33 +1036,33 @@ const handleSelectAudio = async (e: Event) => {
       validFiles.push(file)
     }
   }
-
   if (overFiles.length) {
     const names = overFiles.map(f => f.name).join('、')
-    alert(`以下音频文件超过10MB限制：${names}`)
+    alert(`以下音频文件超过100MB限制：${names}`)
   }
-
   if (validFiles.length === 0) {
     target.value = ''
+    closeToast()
     return
   }
-
-  for (let i = 0; i < validFiles.length; i++) {
-    const file = validFiles[i]
-    const audioUrl = URL.createObjectURL(file)
-    const duration = await getAudioDuration(audioUrl)
-
-    const newAudioItem = {
-      id: `mat-audio-${Date.now()}-${i}`,
-      name: file.name,
-      source: audioUrl,
-      duration,
-      materialType: 'audio',
-      cover: ''
+  try {
+    for (let i = 0; i < validFiles.length; i++) {
+      const file = validFiles[i]
+      const audioUrl = URL.createObjectURL(file)
+      const duration = await getAudioDuration(audioUrl)
+      const newAudioItem = {
+        id: `mat-audio-${Date.now()}-${i}`,
+        name: file.name,
+        source: audioUrl,
+        duration,
+        materialType: 'audio',
+        cover: ''
+      }
+      materialStore.value.audio.push(newAudioItem)
     }
-    materialStore.value.audio.push(newAudioItem)
+  } finally {
+    closeToast()
   }
-
   target.value = ''
 }
 
@@ -940,21 +1114,22 @@ const clipContextMenuConfig = {
       { key: 'copy', label: ' 复制 ', icon: '📋' },
       { key: 'cut', label: ' 剪切 ', icon: '✂️' },
       { key: 'delete', label: ' 删除 ', icon: '🗑️' }
-    ],
-    transition: [
-      { key: 'copy', label: ' 复制 ', icon: '📋' },
-      { key: 'cut', label: ' 剪切 ', icon: '✂️' },
-      { key: 'delete', label: ' 删除 ', icon: '🗑️' }
     ]
   },
   extraItems: []
 };
 
-function onClipMenuSelect(menuKey, clip) {
-  switch (menuKey) {
-    case 'splitAudio':
-      handleSplitAudio({ clip })
-      break;
+
+// 修改 onClipMenuSelect
+function onClipMenuSelect(menuKey: string, clip: any) {
+  if (menuKey === 'splitAudio') {
+    // 图片素材直接拦截，不执行分离音轨逻辑
+    if (clip.sourceType === 'image') {
+      showToast('图片素材没有音频，无法分离音轨',2500)
+      return
+    }
+    handleSplitAudio({ clip })
+    return
   }
 }
 
@@ -964,6 +1139,7 @@ async function handleSplitAudio({ clip }) {
     return;
   }
 
+  const closeToast = showToast('开始分离音轨，请稍候...')
   try {
     console.log(' 开始分离音轨 clip:', clip)
     const resData = await uploadBlobToBackend(clip.source)
@@ -1022,6 +1198,8 @@ async function handleSplitAudio({ clip }) {
   } catch (err) {
     console.error(' 音轨提取失败：', err)
     alert(' 音轨分离失败！')
+  } finally {
+    closeToast()
   }
 }
 
@@ -1101,17 +1279,6 @@ const deleteMaterial = (materialId: string) => {
   )
 }
 
-// =====================【新增：添加转场】=====================
-const TRANSITION_DEFAULT_DURATION = 1 // 默认转场时长 1s
-interface TransitionClip {
-  id: string
-  type: 'transition'
-  name: string
-  transitionType: string
-  duration: number
-  startTime: number
-  endTime: number
-}
 
 const addTransitionToTrack = async (transItem: {key:TransitionType; label:string}) => {
   // 校验1：必须选中clip
@@ -1126,9 +1293,8 @@ const addTransitionToTrack = async (transItem: {key:TransitionType; label:string
     return
   }
   const clipEndTime = sourceClip.endTime
-
   const trackList = videoTrackRef.value.getTracks()
-  // 找到该视频所在轨道
+  // 找到该视频所在【视频轨道】，转场必须和视频同轨道
   const parentTrack = trackList.find(t => t.clips.some(c => c.id === sourceClip.id))
   if (!parentTrack) return
 
@@ -1141,88 +1307,43 @@ const addTransitionToTrack = async (transItem: {key:TransitionType; label:string
     return
   }
 
-  // 转场区间：前视频末尾和后视频开头重叠
-  const transStart = clipEndTime - TRANSITION_DEFAULT_DURATION
-  const transEnd = clipEndTime
-  // 🛡边界保护：转场开始不能小于0，也不能小于源视频的起始时间，不能把转场伸到源视频前面
-  const safeTransStart = Math.max(0, sourceClip.startTime, transStart)
+  // ========== 将总转场1秒平均分摊给前后两个片段，各占一半时长 ==========
+  const halfDur = TRANSITION_DEFAULT_DURATION / 2
+  // 理论起始点：分割点向前取总转场时长
+  let theoryTransStart = clipEndTime - halfDur
+  // 实际转场起始时间：前视频最多只能消耗自身现有的尾部，不能跑到前视频前面
+  const safeTransStart = theoryTransStart
+  const safeTransEnd = nextVideoClip.startTime+halfDur
+  // 实际生效总转场时长（边界不足会自动缩小）
+  const realTotalDur = safeTransEnd - safeTransStart
 
-  // 构建TransitionClip对象
+  // 构建TransitionClip对象：duration使用实际计算出来的真实时长
   const newTransitionClip: TransitionClip = {
     id: `clip-transition-${Date.now()}`,
     type: 'transition',
     name: transItem.label,
     transitionType: transItem.key,
-    duration: TRANSITION_DEFAULT_DURATION,
+    transitionDuration: realTotalDur,
     startTime: safeTransStart,
-    endTime: transEnd
+    endTime: safeTransEnd,
+    trimStart: 0,
+    trimEnd: realTotalDur,
+    beforeClipId: sourceClip.id,
+    afterClipId: nextVideoClip.id,
+    trackId: parentTrack.id
   }
 
-  // 寻找/新建转场轨道
-  const cursorTime = currentTime.value
-  const trackType = 'transition'
-  const tracks_list = videoTrackRef.value.getTracks()
-  let sameTypeTracks = tracks_list.filter(t => t.type === trackType)
+  // ========== splice插入到两个片段中间 ==========
+  //const sourceIndex = parentTrack.clips.findIndex(c => c.id === sourceClip.id)
+  //const insertPos = sourceIndex + 1
+  //parentTrack.clips.splice(insertPos, 0, newTransitionClip)
 
-  const maxOrder = tracks_list.reduce((max, track) => Math.max(max, track.order ?? 0), -1)
-  let targetTrack = null
-  let isNewTrack = false
+  // 使用组件API添加clip，内部完整初始化clip交互数据
+  videoTrackRef.value.addClip(parentTrack.id, newTransitionClip)
 
-  let maxIndex = 0
-  const reg = new RegExp(`^(转场)(\\d+)$`)
-  sameTypeTracks.forEach(track => {
-    const match = track.name.match(reg)
-    if (match) {
-      const num = parseInt(match[2],10)
-      if(num>maxIndex) maxIndex = num
-    }
-  })
-  const nextIndex = maxIndex + 1
-
-  if (sameTypeTracks.length === 0) {
-    targetTrack = {
-      id: `${trackType}-${Date.now()}`,
-      type: trackType,
-      name: `转场${nextIndex}`,
-      mainTrack: false,
-      visible: true,
-      locked: false,
-      order: maxOrder + 1,
-      clips: []
-    }
-    isNewTrack = true
-  } else {
-    for(const track of sameTypeTracks){
-      const isFreeTrack = track.clips.every(clip=>clip.endTime <= cursorTime)
-      if(isFreeTrack){
-        targetTrack = track
-        break
-      }
-    }
-    if(!targetTrack){
-      targetTrack = {
-        id: `${trackType}-${Date.now()}`,
-        type: trackType,
-        name: `转场${nextIndex}`,
-        mainTrack: false,
-        visible: true,
-        locked: false,
-        order: maxOrder + 1,
-        clips: []
-      }
-      isNewTrack = true
-    }
-  }
-
-  if(isNewTrack){
-    targetTrack.clips.push(newTransitionClip)
-    videoTrackRef.value.addTrack(targetTrack)
-  }else{
-    videoTrackRef.value.addClip(targetTrack.id, newTransitionClip)
-  }
   await nextTick()
-  handleTrackSort()
   syncAllTracks()
+  handleTrackSort()
   onClipSelect(newTransitionClip)
 }
 
@@ -1294,6 +1415,7 @@ const addStickerToTrack = async (stickerItem: {src:string}) => {
     startTime: cursorTime,
     endTime: cursorTime + STICKER_DURATION,
     source: stickerItem.src,
+    sourceUrl:stickerItem.src,
     sourceStartTime: 0,
     sourceEndTime: STICKER_DURATION,
     originalDuration: STICKER_DURATION,
@@ -1510,6 +1632,57 @@ const addEffectToTrack = async (effectItem: {key:string; label:string}) => {
   onClipSelect(newClip)
 }
 
+const handleAddTransition = async (beforeClipId, afterClipId) => {
+  // 取 disslove分组第一项：基础溶解
+  const baseDissolveItem = transitionSourceMap.dissolve[0];
+
+  const trackList = videoTrackRef.value.getTracks()
+  // 找到该视频所在【视频轨道】，转场必须和视频同轨道
+  const parentTrack = trackList.find(t => t.clips.some(c => c.id === beforeClipId))
+  if (!parentTrack) return
+
+  // 获取前后clip，计算转场起止时间（取前后clip相交区间）
+  const track = trackData.value.tracks.find(t => t.id === parentTrack.id);
+  if (!track) return;
+
+  const beforeClip = track.clips.find(c => c.id === beforeClipId);
+  const afterClip = track.clips.find(c => c.id === afterClipId);
+  if (!beforeClip || !afterClip) return;
+
+  // 转场时长 1s；转场开始时间 = afterClip.startTime - transitionDuration
+  const transitionDuration = 1.0;
+  const transStartTime = afterClip.startTime - transitionDuration;
+  const transEndTime = afterClip.startTime + transitionDuration;
+
+  // 构造转场clip对象，和后端webApi.py解析格式完全对齐
+  const newTransitionClip: TransitionClip = {
+    id: `clip-transition-${Date.now()}`,
+    type: "transition",
+    name: baseDissolveItem.label, // "基础溶解"
+    transitionType: baseDissolveItem.key, // "dissolve"
+    transitionDuration: transitionDuration,
+    startTime: transStartTime,
+    endTime: transEndTime,
+    trimStart: 0,
+    trimEnd: transitionDuration,
+    beforeClipId: beforeClipId,
+    afterClipId: afterClipId,
+    trackId: parentTrack.id
+  };
+
+  // 使用组件API添加clip，内部完整初始化clip交互数据
+  videoTrackRef.value.addClip(parentTrack.id, newTransitionClip)
+
+  await nextTick()
+  syncAllTracks()
+  handleTrackSort()
+  onClipSelect(newTransitionClip)
+}
+
+const handleTransitionAdded = (transition, beforeId, afterId) => {
+  console.log('转场已添加:', transition.name)
+}
+
 
 // =====================【核心修改：无震荡时间同步逻辑】=====================
 const onPreviewTimeUpdate = (time: number) => {
@@ -1526,114 +1699,149 @@ const saveTrackDate = () => {
 
 // 素材点击添加到时间轴
 const addMaterialToTrack = async (material) => {
-  const cursorTime = currentTime.value
-  const trackType = material.materialType
+  const closeToast = showToast('正在添加素材到轨道，请稍候...')
+  try {
+    const cursorTime = currentTime.value
 
-  const tracks_list = videoTrackRef.value.getTracks()
-  let sameTypeTracks = tracks_list.filter(t => t.type === trackType)
+    const isImageSource = material.materialType === 'image'
+    // 轨道类型：图片也放到video轨道
+    const trackType = isImageSource ? 'video' : material.materialType
 
-  const maxOrder = tracks_list.reduce((max, track) => Math.max(max, track.order ?? 0), -1)
+    const tracks_list = videoTrackRef.value.getTracks()
+    let sameTypeTracks = tracks_list.filter(t => t.type === trackType)
 
-  let targetTrack = null
-  let isNewTrack = false
+    const maxOrder = tracks_list.reduce((max, track) => Math.max(max, track.order ?? 0), -1)
 
-  let maxIndex = 0
-  const reg = new RegExp(`^(视频|音频)(\\d+)$`)
-  sameTypeTracks.forEach(track => {
-    const match = track.name.match(reg)
-    if (match) {
-      const num = parseInt(match[2], 10)
-      if (num > maxIndex) maxIndex = num
-    }
-  })
-  const nextIndex = maxIndex + 1
+    let targetTrack = null
+    let isNewTrack = false
 
-  if (sameTypeTracks.length === 0) {
-    targetTrack = {
-      id: `${trackType}-${Date.now()}`,
-      type: trackType,
-      name: `${trackType === 'video' ? '视频' : '音频'}${nextIndex}`,
-      mainTrack: trackType === 'video',
-      visible: true,
-      locked: false,
-      order: maxOrder + 1,
-      clips: []
-    }
-    isNewTrack = true
-  } else {
-    for (const track of sameTypeTracks) {
-      const isFreeTrack = track.clips.every(clip => clip.endTime <= cursorTime)
-      if (isFreeTrack) {
-        targetTrack = track
-        break
+    let maxIndex = 0
+    const reg = new RegExp(`^(视频|音频|图片)(\\d+)$`)
+    sameTypeTracks.forEach(track => {
+      const match = track.name.match(reg)
+      if (match) {
+        const num = parseInt(match[2], 10)
+        if (num > maxIndex) maxIndex = num
       }
-    }
-    if (!targetTrack) {
+    })
+    const nextIndex = maxIndex + 1
+
+    if (sameTypeTracks.length === 0) {
       targetTrack = {
         id: `${trackType}-${Date.now()}`,
         type: trackType,
         name: `${trackType === 'video' ? '视频' : '音频'}${nextIndex}`,
-        mainTrack: trackType === 'video',
+        mainTrack: true,
         visible: true,
         locked: false,
         order: maxOrder + 1,
         clips: []
       }
       isNewTrack = true
+    } else {
+      for (const track of sameTypeTracks) {
+        const isFreeTrack = track.clips.every(clip => clip.endTime <= cursorTime)
+        if (isFreeTrack) {
+          targetTrack = track
+          break
+        }
+      }
+      if (!targetTrack) {
+        targetTrack = {
+          id: `${trackType}-${Date.now()}`,
+          type: trackType,
+          name: `${trackType === 'video' ? '视频' : '音频'}${nextIndex}`,
+          mainTrack: false,
+          visible: true,
+          locked: false,
+          order: maxOrder + 1,
+          clips: []
+        }
+        isNewTrack = true
+      }
+    }
+
+    let thumbnails_list = []
+    let waveformData = []
+    if (trackType === 'video') {
+      if(isImageSource){
+        // ✅图片：直接使用图片source作为缩略图，只用一张
+        thumbnails_list = [material.source]
+      }else{
+        thumbnails_list = await extractVideoThumbnails(material.source, Math.floor(Number(material.duration)))
+        thumbnails_list = thumbnails_list.thumbnails
+      }
+    } else if (trackType === 'audio') {
+      waveformData = await uploadBlobAudio(material.source)
+      waveformData = waveformData.waveform
+    }
+
+    const newClip = {
+      id: `clip-${Date.now()}`,
+      type: trackType,
+      sourceType: material.materialType, // image / video 标记原始素材类型
+      name: material.name,
+      startTime: cursorTime,
+      endTime: cursorTime + material.duration,
+      source: material.source,
+      sourceStartTime: 0,
+      sourceEndTime: material.duration,
+      originalDuration: material.duration,
+      trimStart: 0,
+      trimEnd: material.duration,
+      opacity: 1,
+      transform: {
+        x: 783/2,
+        y: 450/2,
+        scale: 1
+      },
+      naturalWidth: material.naturalWidth ?? 0,
+      naturalHeight: material.naturalHeight ?? 0,
+      thumbnails: thumbnails_list,
+      waveformData: waveformData
+    }
+
+    console.log('=======newClip==',newClip)
+
+    if (isNewTrack) {
+      targetTrack.clips.push(newClip)
+      videoTrackRef.value.addTrack(targetTrack)
+    } else {
+      videoTrackRef.value.addClip(targetTrack.id, newClip)
+    }
+
+    await nextTick()
+    handleTrackSort()
+    syncAllTracks()
+    await nextTick()
+    // =========新增：添加素材后，通知预览组件强制刷新当前时间，触发视频初始化加载+全量绘制========
+    if(previewRef.value){
+      console.log('-----currentTime.value----',currentTime.value)
+      await previewRef.value.setCurrentTime(currentTime.value, true)
+    }
+    onClipSelect(newClip)
+  }finally {
+    closeToast()
+  }
+}
+
+/**
+ * 规范化轨道数据：全局保证【最多只有一条 mainTrack = true】
+ * 找到第一条mainTrack=true保留，其余所有轨道强制 mainTrack=false
+ */
+function normalizeSingleMainTrack(tracks: any[]) {
+  let hasSetMain = false;
+  for(const tr of tracks) {
+    if(tr.mainTrack) {
+      if(!hasSetMain) {
+        hasSetMain = true;
+      } else {
+        // 后续出现的mainTrack，强制关闭
+        tr.mainTrack = false;
+      }
     }
   }
-
-  let thumbnails_list = []
-  let waveformData = []
-  if (material.materialType === 'video') {
-    thumbnails_list = await extractVideoThumbnails(material.source, Math.floor(Number(material.duration)))
-    thumbnails_list = thumbnails_list.thumbnails
-  } else if (material.materialType === 'audio') {
-    waveformData = await uploadBlobAudio(material.source)
-    waveformData = waveformData.waveform
-  }
-
-  const newClip = {
-    id: `clip-${Date.now()}`,
-    type: material.materialType,
-    name: material.name,
-    startTime: cursorTime,
-    endTime: cursorTime + material.duration,
-    source: material.source,
-    sourceStartTime: 0,
-    sourceEndTime: material.duration,
-    originalDuration: material.duration,
-    trimStart: 0,
-    trimEnd: material.duration,
-    opacity: 1,
-    transform: {
-      x: 783/2,
-      y: 450/2,
-      scale: 1
-    },
-    naturalWidth: material.naturalWidth ?? 0,
-    naturalHeight: material.naturalHeight ?? 0,
-    thumbnails: thumbnails_list,
-    waveformData: waveformData
-  }
-
-  console.log('=======newClip==',newClip)
-
-  if (isNewTrack) {
-    targetTrack.clips.push(newClip)
-    videoTrackRef.value.addTrack(targetTrack)
-  } else {
-    videoTrackRef.value.addClip(targetTrack.id, newClip)
-  }
-
-  await nextTick()
-  handleTrackSort()
-  syncAllTracks()
-  // =========新增：添加素材后，通知预览组件强制刷新当前时间，触发视频初始化加载+全量绘制========
-  if(previewRef.value){
-    await previewRef.value.setCurrentTime(currentTime.value, true)
-  }
-  onClipSelect(newClip)
+  return tracks;
 }
 
 async function uploadBlobAudio(blobUrl) {
@@ -1679,6 +1887,20 @@ watch(
   },
   { deep: true }
 )
+
+watch(()=>trackData.value.tracks, (tracks)=>{
+  let flag = false;
+  for(const t of tracks) {
+    if(t.mainTrack) {
+      if(!flag) {
+        flag = true;
+      } else {
+        t.mainTrack = false;
+      }
+    }
+  }
+}, {deep:true})
+
 
 // 监听选中clip，当trackData内部该clip的数据被修剪/修改时，自动刷新selectedClip，同步属性面板
 watch(
@@ -1789,7 +2011,13 @@ const onClipSelect = (payload) => {
     }
   }
   selectedClip.value = fullClip
-  console.log(' 选中完整片段：', fullClip)
+  // ✅ 增加判空：只有clip不为null才执行selectClip
+  if (fullClip) {
+    videoTrackRef.value.selectClip(fullClip.id)
+  } else {
+    // 取消选中，传null清空时间轴选中状态
+    videoTrackRef.value.selectClip(null)
+  }
 }
 
 // --------------------------【修改这里：实现handleClipMove】--------------------------
@@ -1960,7 +2188,6 @@ const addSubtitleToTrack = async () => {
 }
 /* 左侧资源面板 */
 .resource-sidebar {
-  width: 350px;
   background: #1f212c;
   display: flex;
   flex-direction: column;

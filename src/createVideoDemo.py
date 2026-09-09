@@ -1,38 +1,57 @@
 import subprocess
+import os
 
-filter_complex = (
-    r"color=c=black:size=1920x1080:rate=30:d=14,format=yuva420p[base];"
-    r"[0:v]trim=duration=14,setpts=PTS-STARTPTS,fps=30,format=yuva420p[v0];"
-    r"[0:a]atrim=duration=14,asetpts=PTS-STARTPTS,volume=1.0[outa];"
-    r"[base][v0]overlay=x=20:y=0:shortest=0:repeatlast=0[vo0];"
-    r"[vo0]format=yuv420p[img];"
-    r"[img]dblur=angle=90:radius=12:enable='between(t\,0\,8.85)'[blurred];"
-    r"[blurred]subtitles=filename='./temp_media/ba4639c2-88f3-4778-b4ac-1852581f6d0c.ass'[outv]"
-)
+# ===================== 配置参数 =====================
+VIDEO_1 = r"D:\tldrawWorkspace\temp_media\e9aa8b7d-29c4-46e8-bc70-3469ff604c5b.mp4"
+VIDEO_2 = r"D:\tldrawWorkspace\temp_media\fb5de65a-74d8-4af1-af47-b3ed5ea318fd.mp4"
+OUTPUT_PATH = r"D:\tldrawWorkspace\temp_media\output_wipe_left.mp4"
 
+# 转场参数
+TRANSITION_TYPE = "wipeleft"
+TRANSITION_DURATION = 5
+TRANSITION_START = 12.5
+CENTER_POINT = 15.0
+FADE_HALF = CENTER_POINT - TRANSITION_START  # 2.5
 
-cmd_list = [
+# ===================== 修正后的FFmpeg命令 =====================
+cmd = [
     "ffmpeg",
-    "-ss", "0.0",
-    "-i", r"D:\tldrawWorkspace\temp_media\810c7c1f-652f-4e23-8a7d-90a3c09f57c8.mp4",
-    "-filter_complex", filter_complex,
+    "-y",
+    "-i", VIDEO_1,
+    "-i", VIDEO_2,
+    "-filter_complex",
+    # ---------- 视频流 ----------
+    f"[0:v]trim=duration=15,setpts=PTS-STARTPTS[v0];"
+    f"[1:v]trim=duration=15,setpts=PTS-STARTPTS[v1];"
+    f"[v0][v1]xfade=transition={TRANSITION_TYPE}:duration={TRANSITION_DURATION}:offset={TRANSITION_START}[outv];"
+    # ---------- 音频流：setpts 改为 asetpts（音频专用时间戳滤镜） ----------
+    f"[0:a]atrim=duration=15,asetpts=PTS-STARTPTS,afade=type=out:start_time={TRANSITION_START}:duration={FADE_HALF}:curve=tri[a0];"
+    f"[1:a]atrim=duration=15,asetpts=PTS-STARTPTS,adelay={int(CENTER_POINT*1000)}|{int(CENTER_POINT*1000)},"
+    f"afade=type=in:start_time={CENTER_POINT}:duration={FADE_HALF}:curve=tri[a1];"
+    f"[a0][a1]amix=inputs=2:duration=longest[outa]",
     "-map", "[outv]",
     "-map", "[outa]",
-    "-r", "30",
     "-c:v", "libx264",
     "-c:a", "aac",
-    "-t", "14",
-    "-y",
-    r"D:\tldrawWorkspace\temp_media\test1.mp4"
+    "-r", "30",
+    OUTPUT_PATH
 ]
 
-result = subprocess.run(
-    cmd_list,
+# ===================== 执行 =====================
+print("执行命令：")
+print(" ".join(cmd))
+print("\n开始渲染...")
+
+proc = subprocess.run(
+    cmd,
     capture_output=True,
     text=True,
-    encoding="utf-8",
-    errors="replace"
+    encoding="utf-8"
 )
-print("stdout:\n", result.stdout)
-print("stderr:\n", result.stderr)
-print(f"returncode = {result.returncode}")
+
+if proc.returncode == 0:
+    print(f"\n渲染完成！输出文件：{OUTPUT_PATH}")
+    print(f"文件大小：{os.path.getsize(OUTPUT_PATH)/1024/1024:.2f} MB")
+else:
+    print("\n渲染失败！错误信息：")
+    print(proc.stderr)
